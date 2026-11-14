@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { extension_settings, getContext } from '../../../../../extensions.js';
 import { showMoreMessages } from '../../../../../../script.js';
-import { setLastUserPage, realignPagination, getColStep, setExplicitJumpLoading, updateActiveReadingAnchor, activateWindowForMessage } from '../pagination/pagination.js?v=1.0.30';
+import { setLastUserPage, realignPagination, getColStep, setExplicitJumpLoading, updateActiveReadingAnchor, activateWindowForMessage } from '../pagination/pagination.js?v=1.0.31';
 
 // ============================================================
 // P2 & P3：TauriTavern Store & Search API 接入层
@@ -494,52 +494,46 @@ async function ensureMessageLoaded(mesId) {
     return loadedMes;
 }
 
-function findSiblingAiMessageId(currentId, direction) {
-    const context = typeof getContext === 'function' ? getContext() : null;
-    const chatArray = context ? context.chat : window.chat;
-    if (!chatArray) return -1;
-    
-    if (direction === 'prev') {
-        for (let i = currentId - 1; i >= 0; i--) {
-            const msg = chatArray[i];
-            if (msg && !msg.is_user && !msg.is_system && !msg.system) {
-                return i;
-            }
-        }
-    } else {
-        for (let i = currentId + 1; i < chatArray.length; i++) {
-            const msg = chatArray[i];
-            if (msg && !msg.is_user && !msg.is_system && !msg.system) {
-                return i;
-            }
-        }
-    }
-    return -1;
-}
-
 function getTargetMessage() {
     const doc = getDoc();
     const chatContainer = doc.getElementById('chat');
     if (!chatContainer) return null;
-    
+
+    const context = typeof getContext === 'function' ? getContext() : null;
+    const chatArray = context ? context.chat : window.chat;
+
     const chatRect = chatContainer.getBoundingClientRect();
-    const messages = Array.from(doc.querySelectorAll('#chat .mes'));
-    const aiMessages = messages.filter(m => {
+    const visibleMessages = Array.from(doc.querySelectorAll('#chat .mes')).filter(m => {
+        return !m.hasAttribute('data-twt-win-hidden') && (m.offsetWidth > 0 || m.offsetHeight > 0);
+    });
+    if (visibleMessages.length === 0) return null;
+
+    const isAiMessage = (m) => {
         const isUser = m.classList.contains('user_mes') || m.getAttribute('is_user') === 'true';
         const isSystem = m.classList.contains('system_mes') || m.getAttribute('is_system') === 'true';
-        const isVisible = m.offsetWidth > 0 || m.offsetHeight > 0;
-        return !isUser && !isSystem && isVisible;
-    });
-    if (aiMessages.length === 0) return null;
-    
+        return !isUser && !isSystem;
+    };
+
+    const isToolCallFloor = (m) => {
+        if (m.classList.contains('twt-toolcall-mes') || m.classList.contains('toolCall')) return true;
+        const mesId = parseInt(m.getAttribute('mesid'));
+        return !isNaN(mesId) && isToolCallMessage(chatArray?.[mesId]);
+    };
+
+    const aiMessages = visibleMessages.filter(isAiMessage);
+    const regularAiMessages = aiMessages.filter(m => !isToolCallFloor(m));
+    const candidates = regularAiMessages.length > 0
+        ? regularAiMessages
+        : (aiMessages.length > 0 ? aiMessages : visibleMessages);
+
     if (doc.body.classList.contains('twt-reading-mode')) {
         const currentScrollLeft = chatContainer.scrollLeft;
-        const cw = chatContainer.getBoundingClientRect().width;
+        const cw = chatRect.width;
         const pageCenter = currentScrollLeft + (cw / 2);
-        
-        // Find the AI message that spans the pageCenter
-        for (let i = aiMessages.length - 1; i >= 0; i--) {
-            const mes = aiMessages[i];
+
+        // Find the candidate message that spans the pageCenter
+        for (let i = candidates.length - 1; i >= 0; i--) {
+            const mes = candidates[i];
             const rect = mes.getBoundingClientRect();
             const absoluteLeft = rect.left - chatRect.left + currentScrollLeft;
             const absoluteRight = rect.right - chatRect.left + currentScrollLeft;
@@ -547,29 +541,28 @@ function getTargetMessage() {
                 return mes;
             }
         }
-        
-        // Fallback: closest AI message to the center
+
+        // Fallback: closest message by edge distance to [absoluteLeft, absoluteRight]
         let closestMes = null;
         let minDistance = Infinity;
-        for (const mes of aiMessages) {
+        for (const mes of candidates) {
             const rect = mes.getBoundingClientRect();
             const absoluteLeft = rect.left - chatRect.left + currentScrollLeft;
             const absoluteRight = rect.right - chatRect.left + currentScrollLeft;
-            const mesCenter = (absoluteLeft + absoluteRight) / 2;
-            const dist = Math.abs(mesCenter - pageCenter);
+            const dist = Math.max(0, absoluteLeft - pageCenter, pageCenter - absoluteRight);
             if (dist < minDistance) {
                 minDistance = dist;
                 closestMes = mes;
             }
         }
-        return closestMes || aiMessages[aiMessages.length - 1];
+        return closestMes || candidates[candidates.length - 1];
     } else {
-        // Normal vertical scrolling mode - only check visible AI messages!
+        // Normal vertical scrolling mode - only check visible messages!
         const chatCenterY = chatRect.top + chatRect.height / 2;
         let closestMes = null;
         let minDistance = Infinity;
-        
-        for (const mes of aiMessages) {
+
+        for (const mes of candidates) {
             const rect = mes.getBoundingClientRect();
             if (rect.top <= chatRect.bottom && rect.bottom >= chatRect.top) {
                 const mesCenterY = rect.top + rect.height / 2;
@@ -580,184 +573,55 @@ function getTargetMessage() {
                 }
             }
         }
-        
+
         if (closestMes) return closestMes;
-        
-        for (const mes of aiMessages) {
+
+        for (const mes of candidates) {
             const rect = mes.getBoundingClientRect();
             if (rect.bottom >= chatRect.top) {
                 return mes;
             }
         }
-        
-        return aiMessages[aiMessages.length - 1];
+
+        return candidates[candidates.length - 1];
     }
 }
 
-async function scrollToMessageEdge(edge) {
-    let mes = getTargetMessage();
+function scrollToMessageEdge(edge) {
+    const mes = getTargetMessage();
+    if (!mes) return;
     const doc = getDoc();
     const chatContainer = doc.getElementById('chat');
     if (!chatContainer) return;
 
-    if (!mes) {
-        // 未找到活跃 AI 消息，直接瞬间跳到绝对开头或绝对结尾
-        if (doc.body.classList.contains('twt-reading-mode')) {
-            if (typeof activateWindowForMessage === 'function') activateWindowForMessage(edge);
-            const step = (typeof getColStep === 'function' ? getColStep(chatContainer) : 0) || chatContainer.clientWidth || 1;
-            if (edge === 'start') {
-                chatContainer.scrollLeft = 0;
-                setLastUserPage(0);
-            } else {
-                const maxPage = Math.max(0, Math.ceil(chatContainer.scrollWidth / step) - 1);
-                const allMes = chatContainer.querySelectorAll('.mes');
-                const lastMes = allMes.length > 0 ? allMes[allMes.length - 1] : null;
-                let targetPage = maxPage;
-                if (lastMes && (lastMes.offsetWidth > 0 || lastMes.offsetHeight > 0)) {
-                    const chatRect = chatContainer.getBoundingClientRect();
-                    const rect = lastMes.getBoundingClientRect();
-                    const absLeft = rect.left - chatRect.left + chatContainer.scrollLeft;
-                    targetPage = Math.max(0, Math.min(maxPage, Math.floor((absLeft + 2) / step)));
-                }
-                chatContainer.scrollLeft = targetPage * step;
-                setLastUserPage(targetPage);
-            }
-            chatContainer.scrollTop = 0;
-            if (typeof updateActiveReadingAnchor === 'function') updateActiveReadingAnchor();
-        } else {
-            if (edge === 'start') {
-                chatContainer.scrollTop = 0;
-            } else {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-        }
-        return;
-    }
-    
-    const currentId = parseInt(mes.getAttribute('mesid'));
-    if (isNaN(currentId)) return;
-    
     if (doc.body.classList.contains('twt-reading-mode')) {
         chatContainer.scrollTop = 0;
         const chatRect = chatContainer.getBoundingClientRect();
-        const step = (typeof getColStep === 'function' ? getColStep(chatContainer) : 0) || chatContainer.clientWidth || 1;
-        const currentScrollLeft = chatContainer.scrollLeft;
-        const currentPage = Math.round(currentScrollLeft / step);
-        
-        let targetPage = -1;
-        let targetScrollLeft = 0;
-        
-        for (let attempts = 0; attempts < 2; attempts++) {
-            const curScrollLeft = chatContainer.scrollLeft;
-            const rect = mes.getBoundingClientRect();
-            const absoluteLeft = rect.left - chatRect.left + curScrollLeft;
-            const absoluteRight = rect.right - chatRect.left + curScrollLeft;
-            
-            if (edge === 'start') {
-                targetScrollLeft = absoluteLeft;
-            } else {
-                targetScrollLeft = Math.floor((absoluteRight - 1) / step) * step;
-                targetScrollLeft = Math.max(targetScrollLeft, Math.floor(absoluteLeft / step) * step);
-            }
-            
-            targetPage = Math.round(targetScrollLeft / step);
-            
-            if (targetPage === currentPage && attempts === 0) {
-                let siblingId = currentId;
-                let loadedMes = null;
-                while (true) {
-                    siblingId = findSiblingAiMessageId(siblingId, edge === 'start' ? 'prev' : 'next');
-                    if (siblingId === -1) break;
-                    const tempMes = await ensureMessageLoaded(siblingId);
-                    if (tempMes && (tempMes.offsetWidth > 0 || tempMes.offsetHeight > 0)) {
-                        loadedMes = tempMes;
-                        break;
-                    }
-                }
-                if (loadedMes) {
-                    mes = loadedMes;
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                    continue;
-                }
-                break;
-            } else {
-                break;
-            }
-        }
-        
-        if (targetPage === currentPage) {
-            // 已在边界或未找到相邻 AI 消息 -> 直接瞬间跳到聊天的绝对开头或绝对结尾！
-            if (typeof activateWindowForMessage === 'function') activateWindowForMessage(edge);
-            if (edge === 'start') {
-                chatContainer.scrollLeft = 0;
-                setLastUserPage(0);
-            } else {
-                const maxPage = Math.max(0, Math.ceil(chatContainer.scrollWidth / step) - 1);
-                chatContainer.scrollLeft = maxPage * step;
-                setLastUserPage(maxPage);
-            }
-        } else {
-            // 即时定位到目标页，0ms 延迟，杜绝 smooth scroll 逐帧插值引发的一页页翻过和严重掉帧！
-            chatContainer.scrollLeft = targetPage * step;
-            setLastUserPage(targetPage);
-        }
+        const step = (typeof getColStep === 'function' ? getColStep(chatContainer) : 0) || chatRect.width || chatContainer.clientWidth || 1;
+        const curScrollLeft = chatContainer.scrollLeft;
+        const maxPage = Math.max(0, Math.round(chatContainer.scrollWidth / step) - 1);
+        const rect = mes.getBoundingClientRect();
+        const absLeft = rect.left - chatRect.left + curScrollLeft;
+        const absRight = rect.right - chatRect.left + curScrollLeft;
+
+        const startPage = Math.max(0, Math.min(maxPage, Math.floor((absLeft + 2) / step)));
+        const endPage = Math.max(startPage, Math.min(maxPage, Math.floor((absRight - 2) / step)));
+        const targetPage = edge === 'start' ? startPage : endPage;
+
+        setLastUserPage(targetPage);
+        chatContainer.scrollLeft = targetPage * step;
         chatContainer.scrollTop = 0;
-        if (typeof updateActiveReadingAnchor === 'function') updateActiveReadingAnchor();
+        if (typeof updateActiveReadingAnchor === 'function') updateActiveReadingAnchor(true);
     } else {
         // 垂直滚动模式
         const chatRect = chatContainer.getBoundingClientRect();
         const rect = mes.getBoundingClientRect();
         const currentScrollTop = chatContainer.scrollTop;
-        
-        let shouldJumpToSibling = false;
-        if (edge === 'start') {
-            const diff = Math.abs(rect.top - chatRect.top);
-            if (diff < 15) {
-                shouldJumpToSibling = true;
-            }
-        } else {
-            const diff = Math.abs(rect.bottom - chatRect.bottom);
-            if (diff < 15) {
-                shouldJumpToSibling = true;
-            }
-        }
-        
-        if (shouldJumpToSibling) {
-            let siblingId = currentId;
-            let loadedMes = null;
-            while (true) {
-                siblingId = findSiblingAiMessageId(siblingId, edge === 'start' ? 'prev' : 'next');
-                if (siblingId === -1) break;
-                const tempMes = await ensureMessageLoaded(siblingId);
-                if (tempMes && (tempMes.offsetWidth > 0 || tempMes.offsetHeight > 0)) {
-                    loadedMes = tempMes;
-                    break;
-                }
-            }
-            if (loadedMes) {
-                mes = loadedMes;
-                const newRect = mes.getBoundingClientRect();
-                const targetScrollTop = edge === 'start'
-                    ? newRect.top - chatRect.top + currentScrollTop
-                    : newRect.bottom - chatRect.bottom + currentScrollTop;
-                const isFar = Math.abs(targetScrollTop - currentScrollTop) > 1500;
-                chatContainer.scrollTo({ top: targetScrollTop, behavior: isFar ? 'auto' : 'smooth' });
-                return;
-            }
-            // Sibling not found or already at edge -> jump to absolute start or end!
-            if (edge === 'start') {
-                chatContainer.scrollTop = 0;
-            } else {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-            return;
-        }
-        
         const targetScrollTop = edge === 'start'
             ? rect.top - chatRect.top + currentScrollTop
             : rect.bottom - chatRect.bottom + currentScrollTop;
         const isFar = Math.abs(targetScrollTop - currentScrollTop) > 1500;
-        chatContainer.scrollTo({ top: targetScrollTop, behavior: isFar ? 'auto' : 'smooth' });
+        chatContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: isFar ? 'auto' : 'smooth' });
     }
 }
 
@@ -768,26 +632,18 @@ function scrollToAbsoluteEdge(edge) {
     if (doc.body.classList.contains('twt-reading-mode')) {
         if (typeof activateWindowForMessage === 'function') activateWindowForMessage(edge);
         chatContainer.scrollTop = 0;
-        const step = (typeof getColStep === 'function' ? getColStep(chatContainer) : 0) || chatContainer.clientWidth || 1;
+        const chatRect = chatContainer.getBoundingClientRect();
+        const step = (typeof getColStep === 'function' ? getColStep(chatContainer) : 0) || chatRect.width || chatContainer.clientWidth || 1;
         if (edge === 'start') {
-            chatContainer.scrollLeft = 0;
             setLastUserPage(0);
+            chatContainer.scrollLeft = 0;
         } else {
-            const maxPage = Math.max(0, Math.ceil(chatContainer.scrollWidth / step) - 1);
-            const allMes = chatContainer.querySelectorAll('.mes');
-            const lastMes = allMes.length > 0 ? allMes[allMes.length - 1] : null;
-            let targetPage = maxPage;
-            if (lastMes && (lastMes.offsetWidth > 0 || lastMes.offsetHeight > 0)) {
-                const chatRect = chatContainer.getBoundingClientRect();
-                const rect = lastMes.getBoundingClientRect();
-                const absLeft = rect.left - chatRect.left + chatContainer.scrollLeft;
-                targetPage = Math.max(0, Math.min(maxPage, Math.floor((absLeft + 2) / step)));
-            }
-            chatContainer.scrollLeft = targetPage * step;
-            setLastUserPage(targetPage);
+            const maxPage = Math.max(0, Math.round(chatContainer.scrollWidth / step) - 1);
+            setLastUserPage(maxPage);
+            chatContainer.scrollLeft = maxPage * step;
         }
         chatContainer.scrollTop = 0;
-        if (typeof updateActiveReadingAnchor === 'function') updateActiveReadingAnchor();
+        if (typeof updateActiveReadingAnchor === 'function') updateActiveReadingAnchor(true);
     } else {
         if (edge === 'start') {
             chatContainer.scrollTop = 0;
@@ -806,15 +662,31 @@ function createButton(id, title, iconClass, onClick, onDblClick = null) {
     btn.role = 'button';
     btn.title = title;
     btn.innerHTML = `<i class="fa-solid ${iconClass}"></i>`;
+
+    let lastClickTime = 0;
+    let lastDblTriggerTime = 0;
+
     btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        const now = Date.now();
+        if (onDblClick && now - lastClickTime < 320) {
+            lastClickTime = 0;
+            lastDblTriggerTime = now;
+            onDblClick();
+            return;
+        }
+        lastClickTime = now;
         onClick();
     });
     if (onDblClick) {
         btn.addEventListener('dblclick', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            const now = Date.now();
+            if (now - lastDblTriggerTime < 400) return;
+            lastClickTime = 0;
+            lastDblTriggerTime = now;
             onDblClick();
         });
     }
@@ -1543,7 +1415,7 @@ async function showMuluModal() {
         progressSpan.innerText = `准备中...`;
 
         try {
-            const { triggerBatchCommentsForMessages } = await import('../paragraph/paragraph.js?v=1.0.30');
+            const { triggerBatchCommentsForMessages } = await import('../paragraph/paragraph.js?v=1.0.31');
             // Sequentially generate with progress callback and log callback
             await triggerBatchCommentsForMessages(
                 selectedIds,
@@ -2536,9 +2408,9 @@ export function applyMuluSettings() {
         }
     };
 
-    toggleBtn(BTN_END_ID, settings.muluBtnEnd, '跳至结尾 / 下一条 (双击直达最末)', 'fa-angle-right', () => scrollToMessageEdge('end'), () => scrollToAbsoluteEdge('end'));
+    toggleBtn(BTN_END_ID, settings.muluBtnEnd, '回到本章尾部 (双击直达最末)', 'fa-angle-right', () => scrollToMessageEdge('end'), () => scrollToAbsoluteEdge('end'));
     toggleBtn(BTN_TOC_ID, settings.muluBtnToc, '阅读目录', 'fa-book', showMuluModal);
-    toggleBtn(BTN_START_ID, settings.muluBtnStart, '跳至开头 / 上一条 (双击直达最初)', 'fa-angle-left', () => scrollToMessageEdge('start'), () => scrollToAbsoluteEdge('start'));
+    toggleBtn(BTN_START_ID, settings.muluBtnStart, '回到本章顶部 (双击直达最初)', 'fa-angle-left', () => scrollToMessageEdge('start'), () => scrollToAbsoluteEdge('start'));
 }
 
 export function jumpToStart(absolute = false) {
