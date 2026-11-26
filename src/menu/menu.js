@@ -2,8 +2,8 @@
 import { getContext } from '../../../../../extensions.js';
 import { hideChatMessageRange } from '../../../../../chats.js';
 import { updateViewMessageIds, refreshSwipeButtons, closeMessageEditor } from '../../../../../../script.js';
-import { openParagraphEditor } from '../paragraph/paragraph.js?v=1.0.32';
-import { scrollPageLeft, scrollPageRight, realignPagination } from '../pagination/pagination.js?v=1.0.32';
+import { openParagraphEditor } from '../paragraph/paragraph.js?v=1.0.33';
+import { scrollPageLeft, scrollPageRight, realignPagination } from '../pagination/pagination.js?v=1.0.33';
 
 /**
  * High-performance batch message deletion.
@@ -270,6 +270,8 @@ function showContextMenu(e, $mes, clientX, clientY, settings) {
     };
 
     let order = settings.menuOrder || [
+        'menuOptStartGen',
+        'menuOptStopGen',
         'menuOptRegenerate',
         'menuOptSwipe',
         'menuOptManage',
@@ -287,6 +289,24 @@ function showContextMenu(e, $mes, clientX, clientY, settings) {
         'menuOptRandomInspect',
         'menuOptImageTag'
     ];
+
+    if (!order.includes('menuOptStartGen')) {
+        const regenIdx = order.indexOf('menuOptRegenerate');
+        if (regenIdx !== -1) {
+            order = [...order.slice(0, regenIdx), 'menuOptStartGen', ...order.slice(regenIdx)];
+        } else {
+            order = ['menuOptStartGen', ...order];
+        }
+    }
+
+    if (!order.includes('menuOptStopGen')) {
+        const startIdx = order.indexOf('menuOptStartGen');
+        if (startIdx !== -1) {
+            order = [...order.slice(0, startIdx + 1), 'menuOptStopGen', ...order.slice(startIdx + 1)];
+        } else {
+            order = ['menuOptStopGen', ...order];
+        }
+    }
 
     if (!order.includes('menuOptFullEdit')) {
         const editIdx = order.indexOf('menuOptEdit');
@@ -306,10 +326,50 @@ function showContextMenu(e, $mes, clientX, clientY, settings) {
     }
 
     for (const key of order) {
+        if (key === 'menuOptStartGen' && settings.menuOptStartGen !== false) {
+            appendMenuItem({
+                label: '开始生成',
+                shortLabel: '开始',
+                icon: 'fa-solid fa-play',
+                isGridItem: true,
+                onClick: () => {
+                    const $sendBtn = $('#send_but');
+                    if ($sendBtn.length) {
+                        $sendBtn.trigger('click');
+                    } else {
+                        const ctx = getContext();
+                        if (ctx && typeof ctx.generate === 'function') {
+                            ctx.generate();
+                        }
+                    }
+                }
+            });
+        }
+
+        if (key === 'menuOptStopGen' && settings.menuOptStopGen !== false) {
+            appendMenuItem({
+                label: '暂停生成',
+                shortLabel: '暂停',
+                icon: 'fa-solid fa-pause',
+                isGridItem: true,
+                onClick: () => {
+                    const $stopBtn = $('#mes_stop');
+                    if ($stopBtn.length) {
+                        $stopBtn.trigger('click');
+                    } else {
+                        const ctx = getContext();
+                        if (ctx && typeof ctx.stopGeneration === 'function') {
+                            ctx.stopGeneration();
+                        }
+                    }
+                }
+            });
+        }
+
         if (key === 'menuOptRegenerate' && settings.menuOptRegenerate && isLatestAi) {
             appendMenuItem({
                 label: '重新生成',
-                shortLabel: '生成',
+                shortLabel: '重生成',
                 icon: 'fa-solid fa-rotate-right',
                 isGridItem: true,
                 onClick: () => $('#option_regenerate').trigger('click')
@@ -334,7 +394,7 @@ function showContextMenu(e, $mes, clientX, clientY, settings) {
                     icon: 'fa-regular fa-comment-dots',
                     isGridItem: true,
                     onClick: async () => {
-                        const { triggerBatchCommentsForMessage } = await import('../paragraph/paragraph.js?v=1.0.32');
+                        const { triggerBatchCommentsForMessage } = await import('../paragraph/paragraph.js?v=1.0.33');
                         await triggerBatchCommentsForMessage(mesId);
                     }
                 });

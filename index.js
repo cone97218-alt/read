@@ -1,13 +1,13 @@
 // @ts-nocheck
 import { extension_settings, getContext, renderExtensionTemplateAsync } from '../../../extensions.js';
-import { applyPaginationMode, initPaginationEvent, resetPaginationBinding, realignPagination, handleMoreMessagesLoaded, handleNewMessageRendered, updateActiveReadingAnchor, handleUserMessageSent, handleMessageSwiped, handleGenerationStarted, handleGenerationEnded, handleMessageDeleted, autoNormalizeBubbleTheme, cleanupBubbleThemeNormalization, generateBubbleThemePatchCss, updateDiagPanelVisibility } from './src/pagination/pagination.js?v=1.0.32';
-import { applyVisualMode } from './src/visual/visual.js?v=1.0.32';
-import { setClass } from './src/utils/class_guard.js?v=1.0.32';
-import { saveFontToStorage, getFontBlobUrl, deleteFontFromStorage } from './src/visual/font_storage.js?v=1.0.32';
-import { initMulu, applyMuluSettings } from './src/mulu/mulu.js?v=1.0.32';
-import { initMenu, applyMenuMode, applyFullscreenMode } from './src/menu/menu.js?v=1.0.32';
-import { initHtmlPopup, applyHtmlPopupSettings, registerHtmlPopupEvents } from './src/html_popup/html_popup.js?v=1.0.32';
-import { registerSlashCommands } from './src/slash_commands.js?v=1.0.32';
+import { applyPaginationMode, initPaginationEvent, resetPaginationBinding, realignPagination, handleMoreMessagesLoaded, handleNewMessageRendered, updateActiveReadingAnchor, handleUserMessageSent, handleMessageSwiped, handleGenerationStarted, handleGenerationEnded, handleMessageDeleted, autoNormalizeBubbleTheme, cleanupBubbleThemeNormalization, generateBubbleThemePatchCss, updateDiagPanelVisibility } from './src/pagination/pagination.js?v=1.0.33';
+import { applyVisualMode } from './src/visual/visual.js?v=1.0.33';
+import { setClass } from './src/utils/class_guard.js?v=1.0.33';
+import { saveFontToStorage, getFontBlobUrl, deleteFontFromStorage } from './src/visual/font_storage.js?v=1.0.33';
+import { initMulu, applyMuluSettings } from './src/mulu/mulu.js?v=1.0.33';
+import { initMenu, applyMenuMode, applyFullscreenMode } from './src/menu/menu.js?v=1.0.33';
+import { initHtmlPopup, applyHtmlPopupSettings, registerHtmlPopupEvents } from './src/html_popup/html_popup.js?v=1.0.33';
+import { registerSlashCommands } from './src/slash_commands.js?v=1.0.33';
 
 let parentDoc = document;
 try {
@@ -151,6 +151,8 @@ const defaultSettings = {
     toolCallPreventFlip: true,
     toolCallSelector: '.mes.toolCall, .mes[is_system="true"].toolCall',
     menuEnabled: false,
+    menuOptStartGen: true,
+    menuOptStopGen: true,
     menuOptRegenerate: true,
     menuOptSwipe: true,
     menuOptManage: true,
@@ -175,6 +177,8 @@ const defaultSettings = {
     menuOptRandomInspect: false,
     menuOptImageTag: true,
     menuOrder: [
+        'menuOptStartGen',
+        'menuOptStopGen',
         'menuOptRegenerate',
         'menuOptSwipe',
         'menuOptManage',
@@ -1783,6 +1787,8 @@ function bindUI() {
     const $menuInvokeMethod = $('#twt_menu_invoke_method');
     const $menuLongpressDelay = $('#twt_menu_longpress_delay');
     const $menuDirection = $('#twt_menu_direction');
+    const $menuOptStartGen = $('#twt_menu_opt_start_gen');
+    const $menuOptStopGen = $('#twt_menu_opt_stop_gen');
     const $menuOptRegenerate = $('#twt_menu_opt_regenerate');
     const $menuOptSwipe = $('#twt_menu_opt_swipe');
     const $menuOptManage = $('#twt_menu_opt_manage');
@@ -1856,6 +1862,8 @@ function bindUI() {
     $menuInvokeMethod.val(extension_settings.twt.menuInvokeMethod || 'longpress');
     $menuLongpressDelay.val(extension_settings.twt.menuLongpressDelay || 500);
     $menuDirection.val(extension_settings.twt.menuDirection || 'bottom-right');
+    $menuOptStartGen.prop('checked', extension_settings.twt.menuOptStartGen !== false);
+    $menuOptStopGen.prop('checked', extension_settings.twt.menuOptStopGen !== false);
     $menuOptRegenerate.prop('checked', extension_settings.twt.menuOptRegenerate);
     $menuOptSwipe.prop('checked', extension_settings.twt.menuOptSwipe);
     $menuOptManage.prop('checked', extension_settings.twt.menuOptManage);
@@ -3622,6 +3630,16 @@ function bindUI() {
         }
     });
 
+    $menuOptStartGen.on('change', function () {
+        extension_settings.twt.menuOptStartGen = $(this).prop('checked');
+        getContext().saveSettingsDebounced();
+    });
+
+    $menuOptStopGen.on('change', function () {
+        extension_settings.twt.menuOptStopGen = $(this).prop('checked');
+        getContext().saveSettingsDebounced();
+    });
+
     $menuOptRegenerate.on('change', function () {
         extension_settings.twt.menuOptRegenerate = $(this).prop('checked');
         getContext().saveSettingsDebounced();
@@ -4206,6 +4224,8 @@ function renderMenuOrderList() {
     $container.empty();
 
     const order = extension_settings.twt.menuOrder || [
+        'menuOptStartGen',
+        'menuOptStopGen',
         'menuOptRegenerate',
         'menuOptSwipe',
         'menuOptManage',
@@ -4221,6 +4241,24 @@ function renderMenuOrderList() {
         'menuOptPromptViewer',
         'menuOptRandomInspect'
     ];
+
+    if (!extension_settings.twt.menuOrder.includes('menuOptStartGen')) {
+        const regenIdx = extension_settings.twt.menuOrder.indexOf('menuOptRegenerate');
+        if (regenIdx !== -1) {
+            extension_settings.twt.menuOrder.splice(regenIdx, 0, 'menuOptStartGen');
+        } else {
+            extension_settings.twt.menuOrder.unshift('menuOptStartGen');
+        }
+    }
+
+    if (!extension_settings.twt.menuOrder.includes('menuOptStopGen')) {
+        const startIdx = extension_settings.twt.menuOrder.indexOf('menuOptStartGen');
+        if (startIdx !== -1) {
+            extension_settings.twt.menuOrder.splice(startIdx + 1, 0, 'menuOptStopGen');
+        } else {
+            extension_settings.twt.menuOrder.unshift('menuOptStopGen');
+        }
+    }
 
     if (!extension_settings.twt.menuOrder.includes('menuOptFullEdit')) {
         const editIdx = extension_settings.twt.menuOrder.indexOf('menuOptEdit');
@@ -4240,6 +4278,8 @@ function renderMenuOrderList() {
     }
 
     const labels = {
+        menuOptStartGen: '开始生成',
+        menuOptStopGen: '暂停生成',
         menuOptRegenerate: '重新生成',
         menuOptSwipe: '滑动',
         menuOptManage: '管理消息',
