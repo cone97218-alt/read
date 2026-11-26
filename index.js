@@ -1,13 +1,13 @@
 // @ts-nocheck
 import { extension_settings, getContext, renderExtensionTemplateAsync } from '../../../extensions.js';
-import { applyPaginationMode, initPaginationEvent, resetPaginationBinding, realignPagination, handleMoreMessagesLoaded, handleNewMessageRendered, updateActiveReadingAnchor, handleUserMessageSent, handleMessageSwiped, handleGenerationStarted, handleGenerationEnded, handleMessageDeleted, autoNormalizeBubbleTheme, cleanupBubbleThemeNormalization, generateBubbleThemePatchCss, updateDiagPanelVisibility } from './src/pagination/pagination.js?v=1.0.31';
-import { applyVisualMode } from './src/visual/visual.js?v=1.0.31';
-import { setClass } from './src/utils/class_guard.js?v=1.0.31';
-import { saveFontToStorage, getFontBlobUrl, deleteFontFromStorage } from './src/visual/font_storage.js?v=1.0.31';
-import { initMulu, applyMuluSettings } from './src/mulu/mulu.js?v=1.0.31';
-import { initMenu, applyMenuMode, applyFullscreenMode } from './src/menu/menu.js?v=1.0.31';
-import { initHtmlPopup, applyHtmlPopupSettings, registerHtmlPopupEvents } from './src/html_popup/html_popup.js?v=1.0.31';
-import { registerSlashCommands } from './src/slash_commands.js?v=1.0.31';
+import { applyPaginationMode, initPaginationEvent, resetPaginationBinding, realignPagination, handleMoreMessagesLoaded, handleNewMessageRendered, updateActiveReadingAnchor, handleUserMessageSent, handleMessageSwiped, handleGenerationStarted, handleGenerationEnded, handleMessageDeleted, autoNormalizeBubbleTheme, cleanupBubbleThemeNormalization, generateBubbleThemePatchCss, updateDiagPanelVisibility } from './src/pagination/pagination.js?v=1.0.32';
+import { applyVisualMode } from './src/visual/visual.js?v=1.0.32';
+import { setClass } from './src/utils/class_guard.js?v=1.0.32';
+import { saveFontToStorage, getFontBlobUrl, deleteFontFromStorage } from './src/visual/font_storage.js?v=1.0.32';
+import { initMulu, applyMuluSettings } from './src/mulu/mulu.js?v=1.0.32';
+import { initMenu, applyMenuMode, applyFullscreenMode } from './src/menu/menu.js?v=1.0.32';
+import { initHtmlPopup, applyHtmlPopupSettings, registerHtmlPopupEvents } from './src/html_popup/html_popup.js?v=1.0.32';
+import { registerSlashCommands } from './src/slash_commands.js?v=1.0.32';
 
 let parentDoc = document;
 try {
@@ -1277,22 +1277,78 @@ function normalizeThemeName(name) {
 // 缓存的全局美化主题列表
 let cachedGlobalThemes = [];
 
+// 获取宿主窗口与文档（兼容 iframe 沙箱与主窗口）
+function getHostWindow() {
+    try {
+        if (window.parent && window.parent.document) {
+            return window.parent;
+        }
+    } catch (e) {}
+    return window;
+}
+
+function getThemeManager() {
+    const hostWin = getHostWindow();
+    return hostWin?.themeManager || (typeof window !== 'undefined' ? window.themeManager : null) || null;
+}
+
+function isThemeManagerReady(tm = getThemeManager()) {
+    if (!tm) return false;
+    return typeof tm.isReady === 'function' ? !!tm.isReady() : true;
+}
+
 // 同步从当前宿主环境中提取已注册主题列表（纯内存与 DOM 提取，0 延时与 0 网络开销）
 function getGlobalThemesSync() {
     const themes = [];
     const seen = new Set();
 
-    const addTheme = (val, name) => {
+    const addTheme = (val, name, extra = null) => {
         if (!val) return;
         const cleanVal = String(val).trim();
         const cleanName = String(name || val).trim();
         const norm = normalizeThemeName(cleanVal);
         if (!cleanVal || !norm || seen.has(norm)) return;
         seen.add(norm);
-        themes.push({ val: cleanVal, name: cleanName });
+        themes.push({
+            val: cleanVal,
+            name: cleanName,
+            isFavorite: !!(extra && extra.isFavorite),
+        });
     };
 
-    // 1. 读取 #themes 下拉框已渲染的 option
+    // 1. 优先从美化管理（Theme Companion）window.themeManager 读取完整名单
+    try {
+        const tm = getThemeManager();
+        if (isThemeManagerReady(tm)) {
+            if (typeof tm.getThemeList === 'function') {
+                const list = tm.getThemeList() || [];
+                if (Array.isArray(list)) {
+                    list.forEach(item => {
+                        if (item && item.name) {
+                            addTheme(item.name, item.name, { isFavorite: !!item.isFavorite });
+                        }
+                    });
+                }
+            } else if (typeof tm.getThemes === 'function') {
+                const names = tm.getThemes() || [];
+                if (Array.isArray(names)) {
+                    names.forEach(name => { if (name) addTheme(name, name); });
+                }
+            }
+            if (typeof tm.getTags === 'function') {
+                const tags = tm.getTags() || [];
+                if (Array.isArray(tags)) {
+                    tags.forEach(tag => {
+                        if (Array.isArray(tag?.themes)) {
+                            tag.themes.forEach(th => { if (th) addTheme(th, th); });
+                        }
+                    });
+                }
+            }
+        }
+    } catch (e) {}
+
+    // 2. 读取 #themes 下拉框已渲染的 option
     for (const doc of getAllDocs()) {
         try {
             const select = doc.getElementById('themes');
@@ -1304,10 +1360,12 @@ function getGlobalThemesSync() {
         } catch (e) {}
     }
 
-    // 2. 检查全局 window.themes 与 context.powerUserSettings
+    // 3. 检查全局 window.themes 与 context.powerUserSettings
     try {
-        if (typeof window !== 'undefined' && Array.isArray(window.themes)) {
-            window.themes.forEach(t => {
+        const hostWin = getHostWindow();
+        const winThemes = hostWin?.themes || window.themes;
+        if (Array.isArray(winThemes)) {
+            winThemes.forEach(t => {
                 if (t && (t.name || t.value)) addTheme(t.value || t.name, t.name || t.value);
             });
         }
@@ -1321,23 +1379,9 @@ function getGlobalThemesSync() {
         }
     } catch (e) {}
 
-    // 3. 检查 window.themeManager 标签中挂载的主题
-    try {
-        if (window.themeManager && typeof window.themeManager.getTags === 'function') {
-            const tags = window.themeManager.getTags() || [];
-            if (Array.isArray(tags)) {
-                tags.forEach(tag => {
-                    if (Array.isArray(tag.themes)) {
-                        tag.themes.forEach(th => { if (th) addTheme(th, th); });
-                    }
-                });
-            }
-        }
-    } catch (e) {}
-
-    // 4. 结合已有内存缓存
-    if (cachedGlobalThemes && cachedGlobalThemes.length > 0) {
-        cachedGlobalThemes.forEach(t => addTheme(t.val, t.name));
+    // 4. 仅在实时来源均为空时回退到内存缓存
+    if (themes.length === 0 && cachedGlobalThemes && cachedGlobalThemes.length > 0) {
+        cachedGlobalThemes.forEach(t => addTheme(t.val, t.name, t));
     }
 
     themes.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
@@ -1351,6 +1395,18 @@ function getGlobalThemesSync() {
 async function fetchGlobalThemesLazy() {
     let themes = getGlobalThemesSync();
     if (themes.length > 0) return themes;
+
+    // 优先尝试通过 themeManager 触发静默增量同步
+    try {
+        const tm = getThemeManager();
+        if (isThemeManagerReady(tm) && typeof tm.syncThemes === 'function') {
+            await tm.syncThemes();
+            themes = getGlobalThemesSync();
+            if (themes.length > 0) return themes;
+        }
+    } catch (e) {
+        console.warn('[TwT] 通过 themeManager 同步美化主题失败:', e);
+    }
 
     try {
         const ctx = getContext();
@@ -1369,7 +1425,7 @@ async function fetchGlobalThemesLazy() {
                     const norm = normalizeThemeName(val);
                     if (val && norm && !seen.has(norm)) {
                         seen.add(norm);
-                        themes.push({ val: String(val).trim(), name: String(t.name || val).trim() });
+                        themes.push({ val: String(val).trim(), name: String(t.name || val).trim(), isFavorite: false });
                     }
                 });
                 themes.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
@@ -1390,14 +1446,28 @@ function getGlobalThemes() {
 // 高效获取当前宿主激活的全局美化主题名称（纯内存与单点属性查询）
 function getCurrentActiveTheme() {
     try {
+        const tm = getThemeManager();
+        if (isThemeManagerReady(tm) && typeof tm.getActiveTheme === 'function') {
+            const active = tm.getActiveTheme();
+            if (active && typeof active === 'string' && active.trim()) {
+                return active.trim();
+            }
+        }
+    } catch (e) {}
+
+    try {
         const ctx = getContext();
         if (ctx?.powerUserSettings?.theme) {
             return ctx.powerUserSettings.theme;
         }
     } catch (e) {}
 
-    const el = document.getElementById('themes');
-    if (el && el.value) return el.value;
+    for (const doc of getAllDocs()) {
+        try {
+            const el = doc.getElementById('themes');
+            if (el && el.value) return el.value;
+        } catch (e) {}
+    }
 
     try {
         if (typeof power_user !== 'undefined' && power_user?.theme) {
@@ -1424,9 +1494,10 @@ function findLinkedPreset(themeVal) {
     }
 
     // 3. 尝试 themeManager 标签关联（支持多级标签、深度优先特化与祖先继承）
-    if (window.themeManager) {
+    const tm = getThemeManager();
+    if (isThemeManagerReady(tm)) {
         try {
-            const allTags = typeof window.themeManager.getTags === 'function' ? (window.themeManager.getTags() || []) : [];
+            const allTags = typeof tm.getTags === 'function' ? (tm.getTags() || []) : [];
             const tagsById = new Map();
             if (Array.isArray(allTags)) {
                 allTags.forEach(t => {
@@ -1436,9 +1507,9 @@ function findLinkedPreset(themeVal) {
 
             // 获取主题直接关联的标签列表 (多通道容错匹配)
             const directTagIdSet = new Set();
-            if (typeof window.themeManager.getThemeTags === 'function') {
-                const apiTags1 = window.themeManager.getThemeTags(themeVal) || [];
-                const apiTags2 = window.themeManager.getThemeTags(norm) || [];
+            if (typeof tm.getThemeTags === 'function') {
+                const apiTags1 = tm.getThemeTags(themeVal) || [];
+                const apiTags2 = (norm && norm !== themeVal) ? (tm.getThemeTags(norm) || []) : [];
                 apiTags1.concat(apiTags2).forEach(tid => directTagIdSet.add(tid));
             }
             if (Array.isArray(allTags)) {
@@ -1523,6 +1594,8 @@ function findLinkedPreset(themeVal) {
 // 纯事件驱动的全局美化主题关联监听器（零定时器轮询，低 CPU/内存占用）
 function initThemeLinkListener() {
     let lastDetectedTheme = '';
+    const startupSavedTheme = extension_settings.twt.lastActiveTheme || '';
+    let boundThemeManager = null;
 
     const handleThemeChange = (themeVal, isStartup = false) => {
         if (!themeVal) return;
@@ -1567,10 +1640,57 @@ function initThemeLinkListener() {
         }
     };
 
-    // 1. 事件驱动：通过 jQuery 委托高效监听 #themes 的 change 事件 (覆盖原生及 themeManager 触发的事件)
+    // 绑定美化管理（Theme Companion）事件回调（支持主窗口与延迟就绪）
+    const bindThemeManager = (tm, readyDetail = null) => {
+        if (!tm || boundThemeManager === tm) return;
+        boundThemeManager = tm;
+
+        if (typeof tm.onThemeChanged === 'function') {
+            tm.onThemeChanged((themeName) => {
+                if (!themeName) return;
+                const normCur = normalizeThemeName(themeName);
+                const normLast = normalizeThemeName(lastDetectedTheme);
+                if (normCur !== normLast) {
+                    lastDetectedTheme = themeName;
+                    handleThemeChange(themeName, false);
+                }
+            });
+        }
+
+        if (typeof tm.onThemesUpdated === 'function') {
+            tm.onThemesUpdated(() => {
+                cachedGlobalThemes = [];
+                getGlobalThemesSync();
+            });
+        }
+
+        if (typeof tm.onTagsChanged === 'function') {
+            tm.onTagsChanged(() => checkCurrentTheme(true));
+        }
+
+        // 就绪后刷新主题缓存，并在需要时补做一次主题/标签联动匹配
+        cachedGlobalThemes = [];
+        getGlobalThemesSync();
+        const activeTheme = readyDetail?.activeTheme || getCurrentActiveTheme();
+        if (activeTheme) {
+            const normActive = normalizeThemeName(activeTheme);
+            const normLast = normalizeThemeName(lastDetectedTheme);
+            const normStartupSaved = normalizeThemeName(startupSavedTheme);
+            if (!lastDetectedTheme || normActive !== normLast) {
+                const isFirstDetect = !lastDetectedTheme;
+                lastDetectedTheme = activeTheme;
+                handleThemeChange(activeTheme, isFirstDetect);
+            } else if (normStartupSaved && normActive !== normStartupSaved) {
+                // 启动时主题已变化但当时 themeManager 尚未就绪，补做一次标签关联检查
+                handleThemeChange(activeTheme, false);
+            }
+        }
+    };
+
+    // 1. 事件驱动：通过 jQuery 委托高效监听 #themes 的 change 事件 (兜底原生切换)
     $(document).off('change.twt_theme', '#themes').on('change.twt_theme', '#themes', function() {
         const val = $(this).val();
-        if (val) {
+        if (val && normalizeThemeName(val) !== normalizeThemeName(lastDetectedTheme)) {
             lastDetectedTheme = val;
             handleThemeChange(val, false);
         }
@@ -1593,11 +1713,23 @@ function initThemeLinkListener() {
         }
     } catch (e) {}
 
-    // 3. 事件驱动：监听 themeManager 标签变化与自定义事件
-    if (window.themeManager && typeof window.themeManager.onTagsChanged === 'function') {
-        window.themeManager.onTagsChanged(() => checkCurrentTheme(true));
+    // 3. 事件驱动：接入美化管理（Theme Companion）API 与就绪事件
+    const existingTm = getThemeManager();
+    if (isThemeManagerReady(existingTm)) {
+        bindThemeManager(existingTm);
+    } else {
+        const onThemeManagerReady = (e) => {
+            const tm = getThemeManager();
+            if (tm) {
+                bindThemeManager(tm, e?.detail || null);
+            }
+        };
+        const hostDoc = getHostWindow().document || document;
+        hostDoc.addEventListener('themeManager:ready', onThemeManagerReady, { once: true });
+        if (hostDoc !== document) {
+            document.addEventListener('themeManager:ready', onThemeManagerReady, { once: true });
+        }
     }
-    document.addEventListener('themeManager:tagsChanged', () => checkCurrentTheme(true));
 
     // 4. 防抖 MutationObserver：仅在 documentElement 发生类或样式变更时防抖 200ms 检测，避免频繁微操作卡顿
     let themeMutationTimer = null;
@@ -1904,9 +2036,14 @@ function bindUI() {
                     badgeHtml = `<span style="opacity: 0.55; font-size: 0.75em; margin-left: auto; padding: 1px 5px; border-radius: 3px; background: rgba(255,255,255,0.08); flex-shrink: 0;" title="当前已关联到预设: ${escapeHtml(otherPreset)}">已关联: ${escapeHtml(otherPreset)}</span>`;
                 }
 
+                const favIconHtml = theme.isFavorite
+                    ? `<i class="fa-solid fa-star" style="color: #f5b942; font-size: 0.78em; flex-shrink: 0;" title="已收藏"></i>`
+                    : '';
+
                 $themeContainer.append(`
                     <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:0; font-size:0.95em; padding:4px 0; user-select:none;">
                         <input type="checkbox" class="twt-theme-link-cb" value="${escapeHtml(theme.val)}" ${isChecked ? 'checked' : ''} style="margin:0; flex-shrink:0;" />
+                        ${favIconHtml}
                         <span class="theme-name-text" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(theme.name)}">${escapeHtml(theme.name)}</span>
                         ${badgeHtml}
                     </label>
@@ -1939,12 +2076,13 @@ function bindUI() {
         $tagContainer.empty();
         getEl('#twt-tag-search').val('');
         
-        if (window.themeManager) {
+        const tm = getThemeManager();
+        if (isThemeManagerReady(tm)) {
             getEl('#twt-link-tabs').css('display', 'flex');
             switchTab('themes'); // 默认展示主题页签
             
             try {
-                const tags = (typeof window.themeManager.getTags === 'function' ? window.themeManager.getTags() : []) || [];
+                const tags = (typeof tm.getTags === 'function' ? tm.getTags() : []) || [];
                 if (!Array.isArray(tags) || tags.length === 0) {
                     $tagContainer.append(`<div style="font-size:0.9em; opacity:0.5; text-align:center; padding:10px;">未找到可用的主题标签。</div>`);
                 } else {
@@ -2108,8 +2246,9 @@ function bindUI() {
                 return;
             }
 
-            if (!window.themeManager) return;
-            const tags = (typeof window.themeManager.getTags === 'function' ? window.themeManager.getTags() : []) || [];
+            const tm = getThemeManager();
+            if (!isThemeManagerReady(tm)) return;
+            const tags = (typeof tm.getTags === 'function' ? tm.getTags() : []) || [];
             const tagsById = new Map(tags.map(t => [t.id, t]));
             const childrenMap = new Map();
             tags.forEach(t => {
@@ -2218,7 +2357,7 @@ function bindUI() {
         });
 
         const checkedTags = [];
-        if (window.themeManager) {
+        if (isThemeManagerReady()) {
             getEl('#twt-tag-checkboxes-container .twt-tag-link-cb').each(function() {
                 const val = $(this).val();
                 const checked = $(this).prop('checked');
